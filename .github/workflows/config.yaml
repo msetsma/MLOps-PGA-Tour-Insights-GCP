@@ -1,0 +1,4 @@
+project_id: mitchell-setsma-gcp-project
+region: us-central1
+bucket_name: mlops-data-ingestion/raw-data
+table_name: mitchell-setsma-gcp-project.pga_tour_data.raw_data

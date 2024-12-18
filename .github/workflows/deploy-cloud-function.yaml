@@ -1,0 +1,40 @@
+name: Deploy Cloud Function
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGION: us-central1
+  CONFIG_FILE: config.yaml
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          service_account_key: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Load Config
+        run: |
+          CONFIG=$(cat $CONFIG_FILE)
+          echo "BUCKET_NAME=$(echo $CONFIG | jq -r '.bucket_name')" >> $GITHUB_ENV
+          echo "TABLE_NAME=$(echo $CONFIG | jq -r '.table_name')" >> $GITHUB_ENV
+
+      - name: Deploy Cloud Function
+        run: |
+          gcloud functions deploy gcs_to_bigquery \
+            --runtime python310 \
+            --trigger-resource $BUCKET_NAME \
+            --trigger-event google.storage.object.finalize \
+            --entry-point gcs_to_bigquery \
+            --region $REGION \
+            --project $GCP_PROJECT_ID

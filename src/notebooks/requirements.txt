@@ -1,0 +1,11 @@
+jupyter
+ipykernel
+pandas
+numpy
+scikit-learn
+fastapi
+uvicorn
+gunicorn
+joblib
+matplotlib
+tensorflow
