@@ -136,53 +136,29 @@ def train_model(processed_data_path: Input[Dataset], model_output: Output[Model]
     """
     import tensorflow as tf
     from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense, Dropout, Masking, Input
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
+    from tensorflow.keras.layers import Dense, Input
     import pandas as pd
-    import numpy as np
     import json
 
-    # Sequence creation
-    def create_sequences(data, sequence_length, features, target):
-        sequences = []
-        targets = []
-        for _, group in data.groupby('player id'):
-            group = group.sort_values(by='date')
-            player_data = group[features].values
-            player_target = group[target].values
-            for i in range(len(player_data) - sequence_length + 1):
-                sequences.append(player_data[i:i + sequence_length])
-                targets.append(player_target[i + sequence_length - 1])
-        return np.array(sequences), np.array(targets)
-    
     # Load and prepare data
     data = pd.read_csv(processed_data_path.path)
-    features = [
-        'made_cut', 'sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 
-        'sg_t2g', 'sg_total', 'avg_strokes_per_round', 
-        'sg_putt_rolling_mean', 'sg_arg_rolling_mean', 
-        'sg_app_rolling_mean', 'sg_ott_rolling_mean', 
-        'sg_t2g_rolling_mean', 'sg_total_rolling_mean', 
-        'pos_normalized'
-    ]
+    features = ['sg_putt', 'sg_arg', 'sg_ott', 'sg_t2g']
     target = 'pos'
-    sequence_length = 5
 
-    # Create sequences
-    X, y = create_sequences(data, sequence_length, features, target)
-    X_padded = pad_sequences(X, maxlen=sequence_length, padding='pre', dtype='float32', value=0.0)
+    # Extract features and target
+    X = data[features].values
+    y = data[target].values
 
     # Train-test split
     from sklearn.model_selection import train_test_split
-    X_train, X_test, y_train, y_test = train_test_split(X_padded, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Define model
+    # Define a simple feedforward model
     model = Sequential([
-        Input(shape=(sequence_length, len(features))),
-        Masking(mask_value=0.0),
-        LSTM(units=64, return_sequences=False),
-        Dropout(0.2),
-        Dense(1, activation='linear')
+        Input(shape=(len(features),)),
+        Dense(units=16, activation='relu'),
+        Dense(units=8, activation='relu'),
+        Dense(units=1, activation='linear')
     ])
     model.compile(
         optimizer='adam',
@@ -190,15 +166,15 @@ def train_model(processed_data_path: Input[Dataset], model_output: Output[Model]
         metrics=['mae']
     )
 
-    # Train model
+    # Train the model
     history = model.fit(
         X_train, y_train,
         validation_data=(X_test, y_test),
-        epochs=1,  # Adjust for quicker testing
-        batch_size=32
+        epochs=10,  # Adjust epochs based on need
+        batch_size=32,
+        verbose=1
     )
 
-    # Evaluate model
     test_loss, test_mae = model.evaluate(X_test, y_test)
 
     # Save performance metrics
@@ -209,6 +185,7 @@ def train_model(processed_data_path: Input[Dataset], model_output: Output[Model]
     }
     with open(metrics_output.path, 'w') as f:
         json.dump(metrics, f)
+
 
     model.export(model_output.path)
     print(f"Model saved to: {model_output.path}")

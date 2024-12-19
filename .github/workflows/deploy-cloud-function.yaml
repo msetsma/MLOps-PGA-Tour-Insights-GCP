@@ -1,10 +1,5 @@
 name: Deploy Cloud Function
 
-on:
-  push:
-    branches:
-      - main
-
 env:
   REGION: us-central1
   CONFIG_FILE: config.yaml

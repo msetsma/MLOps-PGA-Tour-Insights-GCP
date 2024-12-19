@@ -1,4 +1,4 @@
-# Inital Architecture
+# Architecture
 
 1. **Data Ingestion**
     - **Source**: New tournament data arrives as CSV files in a **Google Cloud Storage** bucket.
@@ -24,3 +24,20 @@
 5. **Versioning and Rollbacks**
     - Keep track of model versions in Vertex AI.
     - Enable rollback to a previous model if the newly deployed model performs poorly.
+
+# Tools & Services
+- Code - GitHub
+- CI/CD - GitHub Actions (not yet implemented)
+- Data Storage - BigQuery & Cloud Storage
+- Feature Engineering - Vertex AI Pipelines
+- Model Training - Vertex AI
+- Model Deployment - Vertex AI Endpoints
+- Containers - Docker saved to Artifact Registry
+- Monitoring - Vertex AI Monitoring, Cloud Logging
+- Automation - Vertex AI Pipelines & Cloud Functions
+
+# My Workflow
+1. Local development with Jupyterlab notebook.
+2. Develop pipelines and automation baised off of Juypterlab testing.
+3. Deploy service to GCP.
+4. Set up CI CD using GitHub Actions
