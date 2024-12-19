@@ -1,0 +1,329 @@
+{
+  "components": {
+    "comp-deploy-model-to-endpoint": {
+      "executorLabel": "exec-deploy-model-to-endpoint",
+      "inputDefinitions": {
+        "artifacts": {
+          "model_resource_name": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        },
+        "parameters": {
+          "endpoint_display_name": {
+            "parameterType": "STRING"
+          }
+        }
+      }
+    },
+    "comp-preprocess-data": {
+      "executorLabel": "exec-preprocess-data",
+      "inputDefinitions": {
+        "parameters": {
+          "gcs_bucket": {
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "output_data_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
+    "comp-register-model": {
+      "executorLabel": "exec-register-model",
+      "inputDefinitions": {
+        "artifacts": {
+          "metrics_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            },
+            "description": "Path to the metrics JSON file."
+          },
+          "model_path": {
+            "artifactType": {
+              "schemaTitle": "system.Model",
+              "schemaVersion": "0.0.1"
+            },
+            "description": "Path to the trained model."
+          }
+        },
+        "parameters": {
+          "gcs_bucket": {
+            "description": "GCS bucket to save metadata.",
+            "parameterType": "STRING"
+          },
+          "model_display_name": {
+            "description": "Display name for the model in Vertex AI.",
+            "parameterType": "STRING"
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "model_resource_name": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
+    "comp-train-model": {
+      "executorLabel": "exec-train-model",
+      "inputDefinitions": {
+        "artifacts": {
+          "processed_data_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "metrics_output": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          },
+          "model_output": {
+            "artifactType": {
+              "schemaTitle": "system.Model",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    }
+  },
+  "deploymentSpec": {
+    "executors": {
+      "exec-deploy-model-to-endpoint": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "deploy_model_to_endpoint"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef deploy_model_to_endpoint(\n    model_resource_name: Input[Dataset],  # Updated to take resource name as input\n    endpoint_display_name: str\n):\n    from google.cloud import aiplatform\n\n    aiplatform.init()\n\n    # Read the model resource name from the input\n    with open(model_resource_name.path, 'r') as f:\n        model_name = f.read().strip()\n\n    # Check if the endpoint exists\n    endpoints = aiplatform.Endpoint.list(\n        filter=f\"display_name={endpoint_display_name}\"\n    )\n\n    if endpoints:\n        endpoint = endpoints[0]\n        print(f\"Using existing endpoint: {endpoint.resource_name}\")\n    else:\n        # Create a new endpoint if it doesn't exist\n        endpoint = aiplatform.Endpoint.create(\n            display_name=endpoint_display_name\n        )\n        print(f\"Created new endpoint: {endpoint.resource_name}\")\n\n    # Undeploy existing models if any\n    if endpoint.traffic_split:\n        for deployed_model_id in endpoint.traffic_split.keys():\n            endpoint.undeploy(deployed_model_id=deployed_model_id)\n            print(f\"Undeployed model: {deployed_model_id}\")\n\n    # Deploy the new model\n    model = aiplatform.Model(model_name)\n    endpoint.deploy(\n        model=model,\n        deployed_model_display_name=f\"{endpoint_display_name}_model\",\n        machine_type=\"n1-standard-4\",\n    )\n    print(f\"Deployed model to endpoint: {endpoint.resource_name}\")\n\n"
+          ],
+          "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
+        }
+      },
+      "exec-preprocess-data": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "preprocess_data"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset]):\n    \"\"\"\n    Preprocess input data directly and return the processed DataFrame.\n\n    Args:\n        input_data (pd.DataFrame): Input data as a pandas DataFrame.\n\n    Returns:\n        pd.DataFrame: Processed data as a pandas DataFrame.\n    \"\"\"\n    from sklearn.preprocessing import StandardScaler\n    import pandas as pd\n    from google.cloud import storage\n    gcs_bucket = \"mlops-data-ingestion\"\n\n    def list_csv_files(bucket_name: str):\n        \"\"\"List all CSV files in the specified GCS bucket.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blobs = list(bucket.list_blobs())\n        csv_files = [blob.name for blob in blobs if blob.name.endswith(\".csv\")]\n        return csv_files\n\n    def download_csv(bucket_name: str, blob_name: str):\n        \"\"\"Download a CSV file from GCS to a local temporary path.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blob = bucket.blob(blob_name)\n        local_path = f\"/tmp/{blob_name.split('/')[-1]}\"\n        blob.download_to_filename(local_path)\n        return local_path\n\n    csv_files = list_csv_files(gcs_bucket)\n\n    # Combine all CSVs into a single DataFrame\n    data = pd.DataFrame()\n    for csv_file in csv_files:\n        local_file_path = download_csv(gcs_bucket, csv_file)\n        temp_data = pd.read_csv(local_file_path)\n        data = pd.concat([data, temp_data], ignore_index=True)\n\n    # for those that dont make the cut we are giving them a value of the field size plus 1\n    data['field_size'] = data.groupby('tournament id')['pos'].transform('count')\n    data.loc[data['pos'].isnull(), 'pos'] = data['field_size'] + 1\n\n    # Normalize the data for position\n    data['pos_normalized'] = data.groupby('tournament id')['pos'].transform(lambda x: x / x.max())\n\n    # Convert the date column to datetime format if not already\n    data['date'] = pd.to_datetime(data['date'])\n\n    # Drop rows where n_rounds or strokes are NaN or 0\n    data = data.dropna(subset=['n_rounds', 'strokes'])  \n    data = data[(data['n_rounds'] > 0) & (data['strokes'] > 0)]\n\n    # Create avg_strokes_per_round\n    data['avg_strokes_per_round'] = data['strokes'] / data['n_rounds']\n\n    # Drop redundant columns\n    data = data.drop(columns=['strokes', 'n_rounds'])\n\n    # Build rolling strokes gained data\n    rolling_strokes_gained = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g', 'sg_total']\n    for metric in rolling_strokes_gained:\n        data[f'{metric}_rolling_mean'] = data.groupby('player id')[metric].transform(lambda x: x.rolling(window=3, min_periods=1).mean())\n\n    # Normalize and scale the data\n    scaler = StandardScaler()\n    scaled_columns = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g',\n                    'sg_total', 'sg_putt_rolling_mean', 'sg_arg_rolling_mean',\n                    'sg_app_rolling_mean', 'sg_ott_rolling_mean', 'sg_t2g_rolling_mean',\n                    'sg_total_rolling_mean']\n\n    # Ensure only existing columns are scaled to avoid KeyError\n    existing_scaled_columns = [col for col in scaled_columns if col in data.columns]\n    if not existing_scaled_columns:\n        raise ValueError(\"No columns to scale in the scaled_columns list.\")\n    data[existing_scaled_columns] = scaler.fit_transform(data[existing_scaled_columns])\n\n    # Drop unnecessary features\n    features_to_drop = ['tournament id', 'hole_par', 'player', 'tournament name', 'course', 'season', 'purse', 'no_cut']\n    data = data.drop(columns=features_to_drop, errors='ignore')\n\n    # Save the processed data to the output path\n    data.to_csv(output_data_path.path, index=False)\n\n"
+          ],
+          "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
+        }
+      },
+      "exec-register-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "register_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef register_model(\n    model_path: Model,\n    metrics_path: Dataset,\n    model_display_name: str,\n    gcs_bucket: str,\n    model_resource_name: Output[Dataset],\n):\n    \"\"\"\n    Registers a trained model with Vertex AI Model Registry and saves metadata to GCS.\n\n    Args:\n        model_path (Model): Path to the trained model.\n        metrics_path (Dataset): Path to the metrics JSON file.\n        model_display_name (str): Display name for the model in Vertex AI.\n        gcs_bucket (str): GCS bucket to save metadata.\n        model_resource_name (Output[Dataset]): Output path to write the model's resource name.\n    \"\"\"\n    from google.cloud import aiplatform, storage\n    import json\n    import datetime\n\n    aiplatform.init()\n\n    # Load metrics\n    with open(metrics_path.path, 'r') as f:\n        metrics = json.load(f)\n\n    artifact_uri = model_path.path\n    if artifact_uri.startswith('/gcs/'):\n        artifact_uri = artifact_uri.replace('/gcs/', 'gs://', 1)\n\n    # Generate a unique version identifier\n    timestamp = datetime.datetime.now().strftime(\"%Y%m%d%H%M\")\n    versioned_display_name = f\"{model_display_name}_v{timestamp}\"\n\n    # Register model in Vertex AI Model Registry\n    model = aiplatform.Model.upload(\n        display_name=versioned_display_name,\n        artifact_uri=artifact_uri + \".keras\",\n        serving_container_image_uri=\"us-docker.pkg.dev/vertex-ai/prediction/tf2-cpu.2-8:latest\",\n    )\n\n    # Write the model resource name to the output\n    with open(model_resource_name.path, 'w') as f:\n        f.write(model.resource_name)\n\n    # Prepare metadata to save to GCS\n    rows_to_insert = {\n        \"timestamp\": timestamp,\n        \"model_display_name\": versioned_display_name,\n        \"model_resource_name\": model.resource_name,\n        \"test_loss\": metrics.get(\"test_loss\", None),\n        \"test_mae\": metrics.get(\"test_mae\", None),\n    }\n\n    # Save metadata to GCS\n    client = storage.Client()\n    bucket = client.bucket(gcs_bucket)\n    blob = bucket.blob(f\"model-metrics/{versioned_display_name}_metrics.json\")\n    blob.upload_from_string(\n        data=json.dumps(rows_to_insert, indent=4), content_type=\"application/json\"\n    )\n\n    # Logs for debugging\n    print(f\"Model registered with ID: {model.resource_name}\")\n    print(f\"Saved metrics to: gs://{gcs_bucket}/model-metrics/{versioned_display_name}_metrics.json\")\n\n"
+          ],
+          "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
+        }
+      },
+      "exec-train-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "train_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef train_model(processed_data_path: Input[Dataset], model_output: Output[Model], metrics_output: Output[Dataset]):\n    \"\"\"\n    Train a model using the processed data and save the model and metrics.\n    \"\"\"\n    import tensorflow as tf\n    from tensorflow.keras.models import Sequential\n    from tensorflow.keras.layers import LSTM, Dense, Dropout, Masking, Input\n    from tensorflow.keras.preprocessing.sequence import pad_sequences\n    import pandas as pd\n    import numpy as np\n    import json\n\n    # Sequence creation\n    def create_sequences(data, sequence_length, features, target):\n        sequences = []\n        targets = []\n        for _, group in data.groupby('player id'):\n            group = group.sort_values(by='date')\n            player_data = group[features].values\n            player_target = group[target].values\n            for i in range(len(player_data) - sequence_length + 1):\n                sequences.append(player_data[i:i + sequence_length])\n                targets.append(player_target[i + sequence_length - 1])\n        return np.array(sequences), np.array(targets)\n\n    # Load and prepare data\n    data = pd.read_csv(processed_data_path.path)\n    features = [\n        'made_cut', 'sg_putt', 'sg_arg', 'sg_app', 'sg_ott', \n        'sg_t2g', 'sg_total', 'avg_strokes_per_round', \n        'sg_putt_rolling_mean', 'sg_arg_rolling_mean', \n        'sg_app_rolling_mean', 'sg_ott_rolling_mean', \n        'sg_t2g_rolling_mean', 'sg_total_rolling_mean', \n        'pos_normalized'\n    ]\n    target = 'pos'\n    sequence_length = 5\n\n    # Create sequences\n    X, y = create_sequences(data, sequence_length, features, target)\n    X_padded = pad_sequences(X, maxlen=sequence_length, padding='pre', dtype='float32', value=0.0)\n\n    # Train-test split\n    from sklearn.model_selection import train_test_split\n    X_train, X_test, y_train, y_test = train_test_split(X_padded, y, test_size=0.2, random_state=42)\n\n    # Define model\n    model = Sequential([\n        Input(shape=(sequence_length, len(features))),\n        Masking(mask_value=0.0),\n        LSTM(units=64, return_sequences=False),\n        Dropout(0.2),\n        Dense(1, activation='linear')\n    ])\n    model.compile(\n        optimizer='adam',\n        loss='mean_squared_error',\n        metrics=['mae']\n    )\n\n    # Train model\n    history = model.fit(\n        X_train, y_train,\n        validation_data=(X_test, y_test),\n        epochs=10,  # Adjust for quicker testing\n        batch_size=32\n    )\n\n    # Evaluate model\n    test_loss, test_mae = model.evaluate(X_test, y_test)\n\n    # Save performance metrics\n    metrics = {\n        \"test_loss\": test_loss,\n        \"test_mae\": test_mae,\n        \"history\": history.history,\n    }\n    with open(metrics_output.path, 'w') as f:\n        json.dump(metrics, f)\n\n    if model_output.path.startswith('/gcs/'):\n        model_save_path = model_output.path.replace('/gcs/', 'gs://', 1) + \".keras\"\n    else:\n        model_save_path = f\"{model_output.path}.keras\"\n    model.save(model_save_path)\n    print(f\"Model saved to: {model_save_path}\")\n\n"
+          ],
+          "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
+        }
+      }
+    }
+  },
+  "pipelineInfo": {
+    "name": "pga-tour-pipeline"
+  },
+  "root": {
+    "dag": {
+      "tasks": {
+        "deploy-model-to-endpoint": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-deploy-model-to-endpoint"
+          },
+          "dependentTasks": [
+            "register-model"
+          ],
+          "inputs": {
+            "artifacts": {
+              "model_resource_name": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "model_resource_name",
+                  "producerTask": "register-model"
+                }
+              }
+            },
+            "parameters": {
+              "endpoint_display_name": {
+                "runtimeValue": {
+                  "constant": "pga-tour-endpoint"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "deploy-model-to-endpoint"
+          }
+        },
+        "preprocess-data": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-preprocess-data"
+          },
+          "inputs": {
+            "parameters": {
+              "gcs_bucket": {
+                "componentInputParameter": "gcs_bucket"
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "preprocess-data"
+          }
+        },
+        "register-model": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-register-model"
+          },
+          "dependentTasks": [
+            "train-model"
+          ],
+          "inputs": {
+            "artifacts": {
+              "metrics_path": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "metrics_output",
+                  "producerTask": "train-model"
+                }
+              },
+              "model_path": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "model_output",
+                  "producerTask": "train-model"
+                }
+              }
+            },
+            "parameters": {
+              "gcs_bucket": {
+                "runtimeValue": {
+                  "constant": "pga-tour-pipeline-artifacts"
+                }
+              },
+              "model_display_name": {
+                "runtimeValue": {
+                  "constant": "pga-tour-model"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "register-model"
+          }
+        },
+        "train-model": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-train-model"
+          },
+          "dependentTasks": [
+            "preprocess-data"
+          ],
+          "inputs": {
+            "artifacts": {
+              "processed_data_path": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "output_data_path",
+                  "producerTask": "preprocess-data"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "train-model"
+          }
+        }
+      }
+    },
+    "inputDefinitions": {
+      "parameters": {
+        "gcs_bucket": {
+          "parameterType": "STRING"
+        }
+      }
+    }
+  },
+  "schemaVersion": "2.1.0",
+  "sdkVersion": "kfp-2.11.0"
+}

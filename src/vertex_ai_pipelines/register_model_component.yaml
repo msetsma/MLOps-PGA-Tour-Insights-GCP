@@ -1,0 +1,138 @@
+# PIPELINE DEFINITION
+# Name: register-model
+# Inputs:
+#    gcs_bucket: str
+#    metrics_path: system.Dataset
+#    model_display_name: str
+#    model_path: system.Model
+# Outputs:
+#    model_resource_name: system.Dataset
+components:
+  comp-register-model:
+    executorLabel: exec-register-model
+    inputDefinitions:
+      artifacts:
+        metrics_path:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+        model_path:
+          artifactType:
+            schemaTitle: system.Model
+            schemaVersion: 0.0.1
+      parameters:
+        gcs_bucket:
+          parameterType: STRING
+        model_display_name:
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        model_resource_name:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-register-model:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - register_model
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef register_model(\n        model_path: Model,\n        metrics_path:\
+          \ Dataset,\n        model_display_name: str,\n        gcs_bucket: str,\n\
+          \        model_resource_name: Output[Dataset]\n    ):\n    from google.cloud\
+          \ import aiplatform, storage\n    import json\n    import datetime\n\n \
+          \   aiplatform.init()\n\n    # Load metrics\n    with open(metrics_path.path,\
+          \ 'r') as f:\n        metrics = json.load(f)\n\n    # Generate a unique\
+          \ version identifier\n    timestamp = datetime.datetime.now().strftime(\"\
+          %Y%m%d%H%M\")\n    versioned_display_name = f\"{model_display_name}_v{timestamp}\"\
+          \n\n    # Register model\n    model = aiplatform.Model.upload(\n       \
+          \ display_name=versioned_display_name,\n        artifact_uri=model_path.path,\n\
+          \        serving_container_image_uri=\"us-docker.pkg.dev/vertex-ai/prediction/tf2-cpu.2-8:latest\"\
+          \n    )\n\n    # Save the model resource name for downstream steps\n   \
+          \ with open(model_resource_name.path, 'w') as f:\n        f.write(model.resource_name)\n\
+          \n    # Save metrics and model metadata to GCS\n    rows_to_insert = [\n\
+          \        {\n            \"timestamp\": timestamp,\n            \"model_display_name\"\
+          : versioned_display_name,\n            \"model_resource_name\": model.resource_name,\n\
+          \            \"test_loss\": metrics[\"test_loss\"],\n            \"test_mae\"\
+          : metrics[\"test_mae\"],\n            \"binned_results\": json.dumps(metrics[\"\
+          binned_results\"])\n        }\n    ]\n\n    client = storage.Client()\n\
+          \    bucket = client.bucket(gcs_bucket)\n    blob = bucket.blob(f\"model-metrics/{versioned_display_name}_metrics.json\"\
+          )\n    blob.upload_from_string(\n        data=json.dumps(rows_to_insert,\
+          \ indent=4), content_type=\"application/json\"\n    )\n\n    # Log metrics\n\
+          \    print(f\"Model registered with ID: {model.resource_name}\")\n    print(\"\
+          Performance Metrics:\", metrics)\n\n"
+        image: gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest
+pipelineInfo:
+  name: register-model
+root:
+  dag:
+    outputs:
+      artifacts:
+        model_resource_name:
+          artifactSelectors:
+          - outputArtifactKey: model_resource_name
+            producerSubtask: register-model
+    tasks:
+      register-model:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-register-model
+        inputs:
+          artifacts:
+            metrics_path:
+              componentInputArtifact: metrics_path
+            model_path:
+              componentInputArtifact: model_path
+          parameters:
+            gcs_bucket:
+              componentInputParameter: gcs_bucket
+            model_display_name:
+              componentInputParameter: model_display_name
+        taskInfo:
+          name: register-model
+  inputDefinitions:
+    artifacts:
+      metrics_path:
+        artifactType:
+          schemaTitle: system.Dataset
+          schemaVersion: 0.0.1
+      model_path:
+        artifactType:
+          schemaTitle: system.Model
+          schemaVersion: 0.0.1
+    parameters:
+      gcs_bucket:
+        parameterType: STRING
+      model_display_name:
+        parameterType: STRING
+  outputDefinitions:
+    artifacts:
+      model_resource_name:
+        artifactType:
+          schemaTitle: system.Dataset
+          schemaVersion: 0.0.1
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.11.0
