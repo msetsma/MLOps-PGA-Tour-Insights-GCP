@@ -2,7 +2,6 @@ import kfp
 from kfp import dsl
 from kfp.dsl import component, Dataset, Model, Output, Input
 from google.cloud import aiplatform
-from google.cloud import storage
 
 
 BASE_IMAGE = "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
@@ -12,12 +11,6 @@ BASE_IMAGE = "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
 def preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset]):
     """
     Preprocess input data directly and return the processed DataFrame.
-
-    Args:
-        input_data (pd.DataFrame): Input data as a pandas DataFrame.
-
-    Returns:
-        pd.DataFrame: Processed data as a pandas DataFrame.
     """
     from sklearn.preprocessing import StandardScaler
     import pandas as pd
@@ -162,7 +155,7 @@ def train_model(processed_data_path: Input[Dataset], model_output: Output[Model]
     history = model.fit(
         X_train, y_train,
         validation_data=(X_test, y_test),
-        epochs=10,  # Adjust for quicker testing
+        epochs=1,  # Adjust for quicker testing
         batch_size=32
     )
 
@@ -178,18 +171,14 @@ def train_model(processed_data_path: Input[Dataset], model_output: Output[Model]
     with open(metrics_output.path, 'w') as f:
         json.dump(metrics, f)
 
-    if model_output.path.startswith('/gcs/'):
-        model_save_path = model_output.path.replace('/gcs/', 'gs://', 1) + ".keras"
-    else:
-        model_save_path = f"{model_output.path}.keras"
-    model.save(model_save_path)
-    print(f"Model saved to: {model_save_path}")
+    model.export(model_output.path)
+    print(f"Model saved to: {model_output.path}")
 
 
 @component(base_image=BASE_IMAGE)
 def register_model(
-    model_path: Model,
-    metrics_path: Dataset,
+    model_path: Input[Model],
+    metrics_path: Input[Dataset],
     model_display_name: str,
     gcs_bucket: str,
     model_resource_name: Output[Dataset],
@@ -215,6 +204,7 @@ def register_model(
         metrics = json.load(f)
 
     artifact_uri = model_path.path
+    # Convert `/gcs/` to `gs://` if necessary
     if artifact_uri.startswith('/gcs/'):
         artifact_uri = artifact_uri.replace('/gcs/', 'gs://', 1)
 
@@ -225,7 +215,7 @@ def register_model(
     # Register model in Vertex AI Model Registry
     model = aiplatform.Model.upload(
         display_name=versioned_display_name,
-        artifact_uri=artifact_uri + ".keras",
+        artifact_uri=artifact_uri,
         serving_container_image_uri="us-docker.pkg.dev/vertex-ai/prediction/tf2-cpu.2-8:latest",
     )
 
@@ -233,7 +223,7 @@ def register_model(
     with open(model_resource_name.path, 'w') as f:
         f.write(model.resource_name)
 
-    # Prepare metadata to save to GCS
+    #Prepare metadata to save to GCS
     rows_to_insert = {
         "timestamp": timestamp,
         "model_display_name": versioned_display_name,
@@ -258,7 +248,7 @@ def register_model(
 
 @component(base_image=BASE_IMAGE)
 def deploy_model_to_endpoint(
-    model_resource_name: Input[Dataset],  # Updated to take resource name as input
+    model_resource_name: Input[Dataset],
     endpoint_display_name: str
 ):
     from google.cloud import aiplatform
@@ -298,7 +288,6 @@ def deploy_model_to_endpoint(
         machine_type="n1-standard-4",
     )
     print(f"Deployed model to endpoint: {endpoint.resource_name}")
-
 
 
 # Pipeline Definition
