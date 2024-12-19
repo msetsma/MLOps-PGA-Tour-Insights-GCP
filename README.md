@@ -36,6 +36,9 @@ MLOps solution biased on PGA Tour data!
 ### 6. Security
 - **Requirements**: Minimal security concerns (publicly available data).
 
+## Vertex AI Pipeline Overview
+<img src="docs/pipeline_architecture.png" alt="Vertex AI" width="250" />
+
 
 ## For more information please refrence...
 ---
