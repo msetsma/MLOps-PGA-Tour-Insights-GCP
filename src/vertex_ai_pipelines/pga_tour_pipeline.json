@@ -18,6 +18,25 @@
         }
       }
     },
+    "comp-evaluate-deployed-model": {
+      "executorLabel": "exec-evaluate-deployed-model",
+      "inputDefinitions": {
+        "artifacts": {
+          "endpoint_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          },
+          "eval_data_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
     "comp-preprocess-data": {
       "executorLabel": "exec-preprocess-data",
       "inputDefinitions": {
@@ -29,6 +48,12 @@
       },
       "outputDefinitions": {
         "artifacts": {
+          "eval_data_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          },
           "output_data_path": {
             "artifactType": {
               "schemaTitle": "system.Dataset",
@@ -71,6 +96,29 @@
       "outputDefinitions": {
         "artifacts": {
           "model_resource_name": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      }
+    },
+    "comp-save-eval-data-to-gcs": {
+      "executorLabel": "exec-save-eval-data-to-gcs",
+      "inputDefinitions": {
+        "artifacts": {
+          "eval_data_path": {
+            "artifactType": {
+              "schemaTitle": "system.Dataset",
+              "schemaVersion": "0.0.1"
+            }
+          }
+        }
+      },
+      "outputDefinitions": {
+        "artifacts": {
+          "eval_data_out": {
             "artifactType": {
               "schemaTitle": "system.Dataset",
               "schemaVersion": "0.0.1"
@@ -131,6 +179,26 @@
           "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
         }
       },
+      "exec-evaluate-deployed-model": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "evaluate_deployed_model"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef evaluate_deployed_model(eval_data_path: Input[Dataset], endpoint_path: Input[Dataset]):\n    \"\"\"\n    evaluate newly deployed pipeline\n    \"\"\"\n    print(f\"Testing model: {eval_data_path.path} & {endpoint_path.path}\")\n\n    # add evaluation logic here\n\n"
+          ],
+          "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
+        }
+      },
       "exec-preprocess-data": {
         "container": {
           "args": [
@@ -146,7 +214,7 @@
             "sh",
             "-ec",
             "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
-            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset]):\n    \"\"\"\n    Preprocess input data directly and return the processed DataFrame.\n\n    Args:\n        input_data (pd.DataFrame): Input data as a pandas DataFrame.\n\n    Returns:\n        pd.DataFrame: Processed data as a pandas DataFrame.\n    \"\"\"\n    from sklearn.preprocessing import StandardScaler\n    import pandas as pd\n    from google.cloud import storage\n    gcs_bucket = \"mlops-data-ingestion\"\n\n    def list_csv_files(bucket_name: str):\n        \"\"\"List all CSV files in the specified GCS bucket.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blobs = list(bucket.list_blobs())\n        csv_files = [blob.name for blob in blobs if blob.name.endswith(\".csv\")]\n        return csv_files\n\n    def download_csv(bucket_name: str, blob_name: str):\n        \"\"\"Download a CSV file from GCS to a local temporary path.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blob = bucket.blob(blob_name)\n        local_path = f\"/tmp/{blob_name.split('/')[-1]}\"\n        blob.download_to_filename(local_path)\n        return local_path\n\n    csv_files = list_csv_files(gcs_bucket)\n\n    # Combine all CSVs into a single DataFrame\n    data = pd.DataFrame()\n    for csv_file in csv_files:\n        local_file_path = download_csv(gcs_bucket, csv_file)\n        temp_data = pd.read_csv(local_file_path)\n        data = pd.concat([data, temp_data], ignore_index=True)\n\n    # for those that dont make the cut we are giving them a value of the field size plus 1\n    data['field_size'] = data.groupby('tournament id')['pos'].transform('count')\n    data.loc[data['pos'].isnull(), 'pos'] = data['field_size'] + 1\n\n    # Normalize the data for position\n    data['pos_normalized'] = data.groupby('tournament id')['pos'].transform(lambda x: x / x.max())\n\n    # Convert the date column to datetime format if not already\n    data['date'] = pd.to_datetime(data['date'])\n\n    # Drop rows where n_rounds or strokes are NaN or 0\n    data = data.dropna(subset=['n_rounds', 'strokes'])  \n    data = data[(data['n_rounds'] > 0) & (data['strokes'] > 0)]\n\n    # Create avg_strokes_per_round\n    data['avg_strokes_per_round'] = data['strokes'] / data['n_rounds']\n\n    # Drop redundant columns\n    data = data.drop(columns=['strokes', 'n_rounds'])\n\n    # Build rolling strokes gained data\n    rolling_strokes_gained = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g', 'sg_total']\n    for metric in rolling_strokes_gained:\n        data[f'{metric}_rolling_mean'] = data.groupby('player id')[metric].transform(lambda x: x.rolling(window=3, min_periods=1).mean())\n\n    # Normalize and scale the data\n    scaler = StandardScaler()\n    scaled_columns = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g',\n                    'sg_total', 'sg_putt_rolling_mean', 'sg_arg_rolling_mean',\n                    'sg_app_rolling_mean', 'sg_ott_rolling_mean', 'sg_t2g_rolling_mean',\n                    'sg_total_rolling_mean']\n\n    # Ensure only existing columns are scaled to avoid KeyError\n    existing_scaled_columns = [col for col in scaled_columns if col in data.columns]\n    if not existing_scaled_columns:\n        raise ValueError(\"No columns to scale in the scaled_columns list.\")\n    data[existing_scaled_columns] = scaler.fit_transform(data[existing_scaled_columns])\n\n    # Drop unnecessary features\n    features_to_drop = ['tournament id', 'hole_par', 'player', 'tournament name', 'course', 'season', 'purse', 'no_cut']\n    data = data.drop(columns=features_to_drop, errors='ignore')\n\n    # Save the processed data to the output path\n    data.to_csv(output_data_path.path, index=False)\n\n"
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset], eval_data_path: Output[Dataset]):\n    \"\"\"\n    Preprocess input data directly and return the processed DataFrame.\n    \"\"\"\n    from sklearn.preprocessing import StandardScaler\n    import pandas as pd\n    from google.cloud import storage\n    import random\n\n    gcs_bucket = \"mlops-data-ingestion\"\n\n    def list_csv_files(bucket_name: str):\n        \"\"\"List all CSV files in the specified GCS bucket.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blobs = list(bucket.list_blobs())\n        csv_files = [blob.name for blob in blobs if blob.name.endswith(\".csv\")]\n        return csv_files\n\n    def download_csv(bucket_name: str, blob_name: str):\n        \"\"\"Download a CSV file from GCS to a local temporary path.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blob = bucket.blob(blob_name)\n        local_path = f\"/tmp/{blob_name.split('/')[-1]}\"\n        blob.download_to_filename(local_path)\n        return local_path\n\n    csv_files = list_csv_files(gcs_bucket)\n\n    # Combine all CSVs into a single DataFrame\n    data = pd.DataFrame()\n    for csv_file in csv_files:\n        local_file_path = download_csv(gcs_bucket, csv_file)\n        temp_data = pd.read_csv(local_file_path)\n        data = pd.concat([data, temp_data], ignore_index=True)\n\n    # for those that dont make the cut we are giving them a value of the field size plus 1\n    data['field_size'] = data.groupby('tournament id')['pos'].transform('count')\n    data.loc[data['pos'].isnull(), 'pos'] = data['field_size'] + 1\n\n    # Normalize the data for position\n    data['pos_normalized'] = data.groupby('tournament id')['pos'].transform(lambda x: x / x.max())\n\n    # Convert the date column to datetime format if not already\n    data['date'] = pd.to_datetime(data['date'])\n\n    # Drop rows where n_rounds or strokes are NaN or 0\n    data = data.dropna(subset=['n_rounds', 'strokes'])  \n    data = data[(data['n_rounds'] > 0) & (data['strokes'] > 0)]\n\n    # New feature of avg_strokes_per_round\n    data['avg_strokes_per_round'] = data['strokes'] / data['n_rounds']\n\n    # Build rolling strokes gained data\n    rolling_strokes_gained = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g', 'sg_total']\n    for metric in rolling_strokes_gained:\n        data[f'{metric}_rolling_mean'] = data.groupby('player id')[metric].transform(lambda x: x.rolling(window=3, min_periods=1).mean())\n\n    # Normalize and scale the data\n    scaler = StandardScaler()\n    scaled_columns = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g',\n                    'sg_total', 'sg_putt_rolling_mean', 'sg_arg_rolling_mean',\n                    'sg_app_rolling_mean', 'sg_ott_rolling_mean', 'sg_t2g_rolling_mean',\n                    'sg_total_rolling_mean']\n\n    # Ensure only existing columns are scaled to avoid KeyError\n    existing_scaled_columns = [col for col in scaled_columns if col in data.columns]\n    if not existing_scaled_columns:\n        raise ValueError(\"No columns to scale in the scaled_columns list.\")\n    data[existing_scaled_columns] = scaler.fit_transform(data[existing_scaled_columns])\n\n    # Drop unnecessary features\n    features_to_drop = ['tournament id', 'hole_par', 'player', 'tournament name', 'course', 'purse', 'no_cut']\n    data = data.drop(columns=features_to_drop, errors='ignore')\n\n    # Split off evaluation data by randomly selecting players\n    unique_players = data['player id'].unique()\n    random.seed(42)\n    # save 10% of players for later\n    eval_players = random.sample(list(unique_players), int(len(unique_players) * 0.1))  \n    eval_data = data[data['player id'].isin(eval_players)]\n    train_data = data[~data['player id'].isin(eval_players)]\n\n    # Save train and evaluation datasets\n    train_data.to_csv(output_data_path.path, index=False)\n    eval_data.to_csv(eval_data_path.path, index=False)\n\n"
           ],
           "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
         }
@@ -167,6 +235,26 @@
             "-ec",
             "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
             "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef register_model(\n    model_path: Input[Model],\n    metrics_path: Input[Dataset],\n    model_display_name: str,\n    gcs_bucket: str,\n    model_resource_name: Output[Dataset],\n):\n    \"\"\"\n    Registers a trained model with Vertex AI Model Registry and saves metadata to GCS.\n\n    Args:\n        model_path (Model): Path to the trained model.\n        metrics_path (Dataset): Path to the metrics JSON file.\n        model_display_name (str): Display name for the model in Vertex AI.\n        gcs_bucket (str): GCS bucket to save metadata.\n        model_resource_name (Output[Dataset]): Output path to write the model's resource name.\n    \"\"\"\n    from google.cloud import aiplatform, storage\n    import json\n    import datetime\n\n    aiplatform.init()\n\n    # Load metrics\n    with open(metrics_path.path, 'r') as f:\n        metrics = json.load(f)\n\n    artifact_uri = model_path.path\n    # Convert `/gcs/` to `gs://` if necessary\n    if artifact_uri.startswith('/gcs/'):\n        artifact_uri = artifact_uri.replace('/gcs/', 'gs://', 1)\n\n    # Generate a unique version identifier\n    timestamp = datetime.datetime.now().strftime(\"%Y%m%d%H%M\")\n    versioned_display_name = f\"{model_display_name}_v{timestamp}\"\n\n    # Register model in Vertex AI Model Registry\n    model = aiplatform.Model.upload(\n        display_name=versioned_display_name,\n        artifact_uri=artifact_uri,\n        serving_container_image_uri=\"us-docker.pkg.dev/vertex-ai/prediction/tf2-cpu.2-8:latest\",\n    )\n\n    # Write the model resource name to the output\n    with open(model_resource_name.path, 'w') as f:\n        f.write(model.resource_name)\n\n    #Prepare metadata to save to GCS\n    rows_to_insert = {\n        \"timestamp\": timestamp,\n        \"model_display_name\": versioned_display_name,\n        \"model_resource_name\": model.resource_name,\n        \"test_loss\": metrics.get(\"test_loss\", None),\n        \"test_mae\": metrics.get(\"test_mae\", None),\n    }\n\n    # Save metadata to GCS\n    client = storage.Client()\n    bucket = client.bucket(gcs_bucket)\n    blob = bucket.blob(f\"model-metrics/{versioned_display_name}_metrics.json\")\n    blob.upload_from_string(\n        data=json.dumps(rows_to_insert, indent=4), content_type=\"application/json\"\n    )\n\n    # Logs for debugging\n    print(f\"Model registered with ID: {model.resource_name}\")\n    print(f\"Saved metrics to: gs://{gcs_bucket}/model-metrics/{versioned_display_name}_metrics.json\")\n\n"
+          ],
+          "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
+        }
+      },
+      "exec-save-eval-data-to-gcs": {
+        "container": {
+          "args": [
+            "--executor_input",
+            "{{$}}",
+            "--function_to_execute",
+            "save_eval_data_to_gcs"
+          ],
+          "command": [
+            "sh",
+            "-c",
+            "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip || python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location 'kfp==2.11.0' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\n",
+            "sh",
+            "-ec",
+            "program_path=$(mktemp -d)\n\nprintf \"%s\" \"$0\" > \"$program_path/ephemeral_component.py\"\n_KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         \"$program_path/ephemeral_component.py\"                         \"$@\"\n",
+            "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import *\n\ndef save_eval_data_to_gcs(eval_data_path: Input[Dataset], eval_data_out: Output[Dataset]):\n    \"\"\"\n    Save preprocessed evaluation data to GCS as CSV files.\n    \"\"\"\n    import pandas as pd\n    from google.cloud import storage\n\n    def upload_to_gcs(local_path: str, bucket_name: str, blob_name: str):\n        \"\"\"Upload a file to GCS.\"\"\"\n        client = storage.Client()\n        bucket = client.bucket(bucket_name)\n        blob = bucket.blob(blob_name)\n        blob.upload_from_filename(local_path)\n\n    # Load the evaluation data\n    eval_data = pd.read_csv(eval_data_path.path)\n    season = eval_data[\"season\"].iloc[0]\n\n    # Define the GCS path based on the season\n    gcs_season_path = f\"season_{season}_eval_data.csv\"\n\n    # Save the evaluation data to a temporary file\n    local_temp_path = \"/tmp/eval_data.csv\"\n    eval_data.to_csv(local_temp_path, index=False)\n\n    # Upload the file to GCS\n    upload_to_gcs(local_temp_path, \"pga-tour-pipeline-artifacts\", gcs_season_path)\n    eval_data.to_csv(eval_data_out.path, index=False)\n\n"
           ],
           "image": "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
         }
@@ -230,6 +318,37 @@
             "name": "deploy-model-to-endpoint"
           }
         },
+        "evaluate-deployed-model": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-evaluate-deployed-model"
+          },
+          "dependentTasks": [
+            "register-model",
+            "save-eval-data-to-gcs"
+          ],
+          "inputs": {
+            "artifacts": {
+              "endpoint_path": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "model_resource_name",
+                  "producerTask": "register-model"
+                }
+              },
+              "eval_data_path": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "eval_data_out",
+                  "producerTask": "save-eval-data-to-gcs"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "evaluate-deployed-model"
+          }
+        },
         "preprocess-data": {
           "cachingOptions": {
             "enableCache": true
@@ -288,6 +407,30 @@
           },
           "taskInfo": {
             "name": "register-model"
+          }
+        },
+        "save-eval-data-to-gcs": {
+          "cachingOptions": {
+            "enableCache": true
+          },
+          "componentRef": {
+            "name": "comp-save-eval-data-to-gcs"
+          },
+          "dependentTasks": [
+            "preprocess-data"
+          ],
+          "inputs": {
+            "artifacts": {
+              "eval_data_path": {
+                "taskOutputArtifact": {
+                  "outputArtifactKey": "eval_data_path",
+                  "producerTask": "preprocess-data"
+                }
+              }
+            }
+          },
+          "taskInfo": {
+            "name": "save-eval-data-to-gcs"
           }
         },
         "train-model": {

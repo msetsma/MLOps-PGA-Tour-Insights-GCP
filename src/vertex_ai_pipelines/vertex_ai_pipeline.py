@@ -8,13 +8,15 @@ BASE_IMAGE = "gcr.io/mitchell-setsma-gcp-project/pipeline-image:latest"
 
 # Preprocessing Component
 @component(base_image=BASE_IMAGE)
-def preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset]):
+def preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset], eval_data_path: Output[Dataset]):
     """
     Preprocess input data directly and return the processed DataFrame.
     """
     from sklearn.preprocessing import StandardScaler
     import pandas as pd
     from google.cloud import storage
+    import random
+
     gcs_bucket = "mlops-data-ingestion"
 
     def list_csv_files(bucket_name: str):
@@ -57,11 +59,8 @@ def preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset]):
     data = data.dropna(subset=['n_rounds', 'strokes'])  
     data = data[(data['n_rounds'] > 0) & (data['strokes'] > 0)]
 
-    # Create avg_strokes_per_round
+    # New feature of avg_strokes_per_round
     data['avg_strokes_per_round'] = data['strokes'] / data['n_rounds']
-
-    # Drop redundant columns
-    data = data.drop(columns=['strokes', 'n_rounds'])
 
     # Build rolling strokes gained data
     rolling_strokes_gained = ['sg_putt', 'sg_arg', 'sg_app', 'sg_ott', 'sg_t2g', 'sg_total']
@@ -82,11 +81,51 @@ def preprocess_data(gcs_bucket: str, output_data_path: Output[Dataset]):
     data[existing_scaled_columns] = scaler.fit_transform(data[existing_scaled_columns])
 
     # Drop unnecessary features
-    features_to_drop = ['tournament id', 'hole_par', 'player', 'tournament name', 'course', 'season', 'purse', 'no_cut']
+    features_to_drop = ['tournament id', 'hole_par', 'player', 'tournament name', 'course', 'purse', 'no_cut']
     data = data.drop(columns=features_to_drop, errors='ignore')
 
-    # Save the processed data to the output path
-    data.to_csv(output_data_path.path, index=False)
+    # Split off evaluation data by randomly selecting players
+    unique_players = data['player id'].unique()
+    random.seed(42)
+    # save 10% of players for later
+    eval_players = random.sample(list(unique_players), int(len(unique_players) * 0.1))  
+    eval_data = data[data['player id'].isin(eval_players)]
+    train_data = data[~data['player id'].isin(eval_players)]
+
+    # Save train and evaluation datasets
+    train_data.to_csv(output_data_path.path, index=False)
+    eval_data.to_csv(eval_data_path.path, index=False)
+
+
+@component(base_image=BASE_IMAGE)
+def save_eval_data_to_gcs(eval_data_path: Input[Dataset], eval_data_out: Output[Dataset]):
+    """
+    Save preprocessed evaluation data to GCS as CSV files.
+    """
+    import pandas as pd
+    from google.cloud import storage
+
+    def upload_to_gcs(local_path: str, bucket_name: str, blob_name: str):
+        """Upload a file to GCS."""
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.upload_from_filename(local_path)
+
+    # Load the evaluation data
+    eval_data = pd.read_csv(eval_data_path.path)
+    season = eval_data["season"].iloc[0]
+
+    # Define the GCS path based on the season
+    gcs_season_path = f"season_{season}_eval_data.csv"
+
+    # Save the evaluation data to a temporary file
+    local_temp_path = "/tmp/eval_data.csv"
+    eval_data.to_csv(local_temp_path, index=False)
+
+    # Upload the file to GCS
+    upload_to_gcs(local_temp_path, "pga-tour-pipeline-artifacts", gcs_season_path)
+    eval_data.to_csv(eval_data_out.path, index=False)
 
 
 # model training portion
@@ -245,7 +284,6 @@ def register_model(
     print(f"Saved metrics to: gs://{gcs_bucket}/model-metrics/{versioned_display_name}_metrics.json")
 
 
-
 @component(base_image=BASE_IMAGE)
 def deploy_model_to_endpoint(
     model_resource_name: Input[Dataset],
@@ -290,12 +328,26 @@ def deploy_model_to_endpoint(
     print(f"Deployed model to endpoint: {endpoint.resource_name}")
 
 
+@component(base_image=BASE_IMAGE)
+def evaluate_deployed_model(eval_data_path: Input[Dataset], endpoint_path: Input[Dataset]):
+    """
+    evaluate newly deployed pipeline
+    """
+    print(f"Testing model: {eval_data_path.path} & {endpoint_path.path}")
+
+    # add evaluation logic here
+
+
 # Pipeline Definition
 def vertex_pipeline():
     @dsl.pipeline(name="pga-tour-pipeline")
     def pipeline(gcs_bucket: str):
         preprocess_task = preprocess_data(
             gcs_bucket=gcs_bucket
+        )
+
+        eval_data = save_eval_data_to_gcs(
+            eval_data_path=preprocess_task.outputs["eval_data_path"]
         )
 
         train_task = train_model(
@@ -310,8 +362,13 @@ def vertex_pipeline():
         )
 
         deploy_task = deploy_model_to_endpoint(
-            model_resource_name=register_task.outputs["model_resource_name"],  # Pass the resource name output
+            model_resource_name=register_task.outputs["model_resource_name"],
             endpoint_display_name="pga-tour-endpoint"
+        )
+
+        evaluate_model = evaluate_deployed_model(
+            eval_data_path=eval_data.outputs["eval_data_out"],
+            endpoint_path=register_task.outputs["model_resource_name"]
         )
 
     return pipeline
