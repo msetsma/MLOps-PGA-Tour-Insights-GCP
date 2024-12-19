@@ -1,10 +1,7 @@
-### High-Level
----
-MLOps solution biased on PGA Tour data!
+## MLOps solution biased on PGA Tour data!
 
 
 ## Project Outline
----
 
 ### 1. Scope
 
@@ -40,17 +37,16 @@ MLOps solution biased on PGA Tour data!
 <img src="docs/pipeline_architecture.png" alt="Vertex AI" width="250" />
 
 
-## For more information please refrence...
----
+## More information...
 Check out [Architecture](docs/ARCHITECTURE.md) for more information.
 
 
 ## Google Cloud Platform & GitHub
----
+
 **Why GCP?** At the time of writing this, my current employer uses GCP for our cloud needs. If I had more time it would be fun to branch out and learn a new platform.
 
 ## Important Golf Terminology
----
+
 - **Par**: The number of strokes a skilled player is expected to take to complete a hole.
 - **Strokes**: The total number of shots a player takes on a hole, round, or tournament.
 - **Cut**: A point at which the top players advance to the weekend and the rest are eliminated.
